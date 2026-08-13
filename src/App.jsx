@@ -13,6 +13,18 @@ function todayStr() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
+const SAMPLE_CSV = `商品名,カテゴリ,価格,在庫数,発売日,評価
+ワイヤレスイヤホン,オーディオ,8900,42,2025-03-12,4.3
+モバイルバッテリー,アクセサリ,3200,0,2024-11-05,4.1
+スマートウォッチ,ウェアラブル,15800,17,2026-01-20,4.6
+Bluetoothスピーカー,オーディオ,6400,,2025-07-01,3.9
+USB-Cケーブル,アクセサリ,980,120,2024-06-18,4.0
+折りたたみキーボード,PC周辺機器,5200,8,2025-09-30,4.2
+ノートPCスタンド,PC周辺機器,2800,,2025-02-14,4.4
+ポータブル加湿器,生活家電,4100,25,2025-12-01,3.7
+LEDデスクライト,生活家電,3600,3,2024-08-22,4.5
+ゲーミングマウス,PC周辺機器,7200,60,2026-02-10,4.7`
+
 function inferType(values) {
   const sample = values.filter((v) => v !== '' && v != null).slice(0, 30)
   if (sample.length === 0) return 'empty'
@@ -56,6 +68,18 @@ export default function App() {
       },
       error: (err) => setError(err.message),
     })
+  }, [])
+
+  const loadSample = useCallback(() => {
+    setError(null)
+    const result = Papa.parse(SAMPLE_CSV, { header: true, skipEmptyLines: true })
+    const cols = result.meta.fields || []
+    setColumns(cols)
+    setRows(result.data)
+    setFileName('sample-products.csv')
+    setFileSize(new Blob([SAMPLE_CSV]).size)
+    setSortKey(null)
+    setQuery('')
   }, [])
 
   const onDrop = useCallback(
@@ -198,6 +222,21 @@ export default function App() {
             hidden
             onChange={(e) => parseFile(e.target.files?.[0])}
           />
+        </div>
+      )}
+
+      {!fileName && (
+        <div className="sample-cta">
+          <span>手元にCSVがない場合は</span>
+          <button
+            className="btn btn--accent"
+            onClick={(e) => {
+              e.stopPropagation()
+              loadSample()
+            }}
+          >
+            サンプルデータを試す
+          </button>
         </div>
       )}
 
