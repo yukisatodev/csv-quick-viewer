@@ -1,17 +1,7 @@
-import { useState, useMemo, useCallback, useRef } from 'react'
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import Papa from 'papaparse'
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function todayStr() {
-  const d = new Date()
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
+import { BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } from 'recharts'
+import { formatBytes, todayStr, inferType, computeColumnStats } from './utils'
 
 const SAMPLE_CSV = `商品名,カテゴリ,価格,在庫数,発売日,評価
 ワイヤレスイヤホン,オーディオ,8900,42,2025-03-12,4.3
@@ -25,16 +15,6 @@ USB-Cケーブル,アクセサリ,980,120,2024-06-18,4.0
 LEDデスクライト,生活家電,3600,3,2024-08-22,4.5
 ゲーミングマウス,PC周辺機器,7200,60,2026-02-10,4.7`
 
-function inferType(values) {
-  const sample = values.filter((v) => v !== '' && v != null).slice(0, 30)
-  if (sample.length === 0) return 'empty'
-  const allNum = sample.every((v) => v !== '' && !isNaN(Number(v)))
-  if (allNum) return 'number'
-  const allDate = sample.every((v) => !isNaN(Date.parse(v)))
-  if (allDate) return 'date'
-  return 'text'
-}
-
 export default function App() {
   const [fileName, setFileName] = useState(null)
   const [fileSize, setFileSize] = useState(0)
@@ -45,42 +25,75 @@ export default function App() {
   const [query, setQuery] = useState('')
   const [isDragging, setIsDragging] = useState(false)
   const [error, setError] = useState(null)
+  const [hiddenColumns, setHiddenColumns] = useState(() => new Set())
+  const [showColumnPanel, setShowColumnPanel] = useState(false)
+  const [theme, setTheme] = useState('light')
+  const [chartColumn, setChartColumn] = useState(null)
+  const [showStats, setShowStats] = useState(false)
+  const [showAbout, setShowAbout] = useState(false)
+  const [urlInput, setUrlInput] = useState('')
+  const [urlLoading, setUrlLoading] = useState(false)
   const inputRef = useRef(null)
 
-  const parseFile = useCallback((file) => {
-    if (!file) return
-    if (!file.name.toLowerCase().endsWith('.csv')) {
-      setError('CSVファイル(.csv)を指定してください')
-      return
-    }
-    setError(null)
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (result) => {
-        const cols = result.meta.fields || []
-        setColumns(cols)
-        setRows(result.data)
-        setFileName(file.name)
-        setFileSize(file.size)
-        setSortKey(null)
-        setQuery('')
-      },
-      error: (err) => setError(err.message),
-    })
-  }, [])
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+  }, [theme])
 
-  const loadSample = useCallback(() => {
-    setError(null)
-    const result = Papa.parse(SAMPLE_CSV, { header: true, skipEmptyLines: true })
-    const cols = result.meta.fields || []
+  const loadParsedData = useCallback((parsed, name, size) => {
+    const cols = parsed.meta.fields || []
     setColumns(cols)
-    setRows(result.data)
-    setFileName('sample-products.csv')
-    setFileSize(new Blob([SAMPLE_CSV]).size)
+    setRows(parsed.data)
+    setFileName(name)
+    setFileSize(size)
     setSortKey(null)
     setQuery('')
+    setHiddenColumns(new Set())
+    setChartColumn(null)
+    setError(null)
   }, [])
+
+  const parseFile = useCallback(
+    (file) => {
+      if (!file) return
+      if (!file.name.toLowerCase().endsWith('.csv')) {
+        setError('CSVファイル(.csv)を指定してください')
+        return
+      }
+      setError(null)
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (result) => loadParsedData(result, file.name, file.size),
+        error: (err) => setError(err.message),
+      })
+    },
+    [loadParsedData],
+  )
+
+  const loadSample = useCallback(() => {
+    const result = Papa.parse(SAMPLE_CSV, { header: true, skipEmptyLines: true })
+    loadParsedData(result, 'sample-products.csv', new Blob([SAMPLE_CSV]).size)
+  }, [loadParsedData])
+
+  const loadFromUrl = useCallback(async () => {
+    if (!urlInput.trim()) return
+    setUrlLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(urlInput.trim())
+      if (!res.ok) throw new Error(`取得に失敗しました (HTTP ${res.status})`)
+      const text = await res.text()
+      const result = Papa.parse(text, { header: true, skipEmptyLines: true })
+      const name = urlInput.trim().split('/').pop() || 'remote.csv'
+      loadParsedData(result, name, new Blob([text]).size)
+    } catch (err) {
+      setError(
+        `URLからの読み込みに失敗しました: ${err.message}(相手サーバーがCORSを許可していない場合、ブラウザからは読み込めません)`,
+      )
+    } finally {
+      setUrlLoading(false)
+    }
+  }, [urlInput, loadParsedData])
 
   const onDrop = useCallback(
     (e) => {
@@ -99,6 +112,16 @@ export default function App() {
     }
     return types
   }, [columns, rows])
+
+  const visibleColumns = useMemo(
+    () => columns.filter((c) => !hiddenColumns.has(c)),
+    [columns, hiddenColumns],
+  )
+
+  const numericColumns = useMemo(
+    () => columns.filter((c) => columnTypes[c] === 'number'),
+    [columns, columnTypes],
+  )
 
   const filteredRows = useMemo(() => {
     if (!query.trim()) return rows
@@ -132,6 +155,20 @@ export default function App() {
     return copy
   }, [filteredRows, sortKey, sortDir, columnTypes])
 
+  const columnStats = useMemo(
+    () => computeColumnStats(filteredRows, columns, columnTypes),
+    [filteredRows, columns, columnTypes],
+  )
+
+  const chartData = useMemo(() => {
+    if (!chartColumn) return []
+    const labelCol = columns[0]
+    return sortedRows.slice(0, 50).map((row, i) => ({
+      name: String(row[labelCol] ?? `#${i + 1}`).slice(0, 12),
+      value: Number(row[chartColumn]) || 0,
+    }))
+  }, [sortedRows, chartColumn, columns])
+
   const toggleSort = (col) => {
     if (sortKey !== col) {
       setSortKey(col)
@@ -144,6 +181,15 @@ export default function App() {
     }
   }
 
+  const toggleColumn = (col) => {
+    setHiddenColumns((prev) => {
+      const next = new Set(prev)
+      if (next.has(col)) next.delete(col)
+      else next.add(col)
+      return next
+    })
+  }
+
   const reset = () => {
     setFileName(null)
     setFileSize(0)
@@ -152,6 +198,9 @@ export default function App() {
     setSortKey(null)
     setQuery('')
     setError(null)
+    setHiddenColumns(new Set())
+    setChartColumn(null)
+    setUrlInput('')
   }
 
   const emptyCount = useMemo(() => {
@@ -163,6 +212,22 @@ export default function App() {
     }
     return count
   }, [rows, columns])
+
+  const exportCsv = () => {
+    const data = sortedRows.map((row) => {
+      const out = {}
+      for (const col of visibleColumns) out[col] = row[col]
+      return out
+    })
+    const csv = Papa.unparse(data)
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `filtered-${fileName || 'export.csv'}`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   return (
     <div className="sheet">
@@ -194,7 +259,39 @@ export default function App() {
             <span className="titleblock__value">{todayStr()}</span>
           </div>
         </div>
+        <button
+          className="theme-toggle"
+          onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
+          aria-label="ダークモード切替"
+          title="ダークモード切替"
+        >
+          {theme === 'light' ? '☾' : '☀'}
+        </button>
       </header>
+
+      <section className="about">
+        <button className="about__toggle" onClick={() => setShowAbout((v) => !v)}>
+          <span>このツールについて</span>
+          <span>{showAbout ? '▲' : '▼'}</span>
+        </button>
+        {showAbout && (
+          <div className="about__body">
+            <p>
+              手元のCSVファイルの中身を、環境構築なしでその場で確認するための軽量ツールです。
+              「とりあえず開いて中身を見たいだけなのに、Excelを立ち上げるのは大げさ」という場面を想定して作りました。
+            </p>
+            <p>
+              フリーランスでWebエンジニアを目指す中でのポートフォリオの一つで、
+              次に予定しているCSVデータチェックツール(Pythonバックエンド版)の前段階として、
+              まずはフロントエンドのみで完結する形で作っています。
+            </p>
+            <p>
+              ファイルはすべてブラウザ内で処理され、サーバーには一切送信されません。
+              業務で受け取ったCSVの中身を人に見せる前にざっと確認する、といった用途を想定しています。
+            </p>
+          </div>
+        )}
+      </section>
 
       {!fileName && (
         <div
@@ -240,6 +337,20 @@ export default function App() {
         </div>
       )}
 
+      {!fileName && (
+        <div className="url-loader">
+          <input
+            type="text"
+            placeholder="公開URLのCSVを読み込む(例: https://example.com/data.csv)"
+            value={urlInput}
+            onChange={(e) => setUrlInput(e.target.value)}
+          />
+          <button className="btn btn--ghost" onClick={loadFromUrl} disabled={urlLoading}>
+            {urlLoading ? '読み込み中…' : 'URLから読み込む'}
+          </button>
+        </div>
+      )}
+
       {error && <div className="error">⚠ {error}</div>}
 
       {fileName && (
@@ -259,16 +370,109 @@ export default function App() {
               <span className="toolbar__divider">/</span>
               <span>空セル {emptyCount}</span>
             </div>
-            <button className="btn btn--ghost" onClick={reset}>
-              別のファイルを開く
-            </button>
+            <div className="toolbar__actions">
+              <div className="dropdown">
+                <button className="btn btn--ghost" onClick={() => setShowColumnPanel((v) => !v)}>
+                  列の表示 ▾
+                </button>
+                {showColumnPanel && (
+                  <div className="dropdown__panel">
+                    {columns.map((col) => (
+                      <label key={col} className="dropdown__item">
+                        <input
+                          type="checkbox"
+                          checked={!hiddenColumns.has(col)}
+                          onChange={() => toggleColumn(col)}
+                        />
+                        {col}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button className="btn btn--ghost" onClick={() => setShowStats((v) => !v)}>
+                {showStats ? '統計を隠す' : '統計を表示'}
+              </button>
+              <button className="btn btn--accent" onClick={exportCsv}>
+                CSVをダウンロード
+              </button>
+              <button className="btn btn--ghost" onClick={reset}>
+                別のファイルを開く
+              </button>
+            </div>
           </div>
+
+          {showStats && (
+            <div className="stats-panel">
+              {visibleColumns.map((col) => {
+                const s = columnStats[col]
+                if (!s) return null
+                return (
+                  <div key={col} className="stats-card">
+                    <div className="stats-card__title">{col}</div>
+                    <div className="stats-card__type">{s.type}</div>
+                    {s.type === 'number' && (
+                      <div className="stats-card__body">
+                        <span>min {s.min ?? '—'}</span>
+                        <span>max {s.max ?? '—'}</span>
+                        <span>avg {s.avg ?? '—'}</span>
+                      </div>
+                    )}
+                    {s.type === 'date' && (
+                      <div className="stats-card__body">
+                        <span>from {s.min ?? '—'}</span>
+                        <span>to {s.max ?? '—'}</span>
+                      </div>
+                    )}
+                    {s.type === 'text' && (
+                      <div className="stats-card__body">
+                        <span>ユニーク値 {s.uniqueCount}</span>
+                      </div>
+                    )}
+                    <div className="stats-card__missing">欠損 {s.missing}</div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {numericColumns.length > 0 && (
+            <div className="chart-panel">
+              <div className="chart-panel__header">
+                <span>グラフ表示(先頭50行)</span>
+                <select
+                  value={chartColumn ?? ''}
+                  onChange={(e) => setChartColumn(e.target.value || null)}
+                >
+                  <option value="">列を選択…</option>
+                  {numericColumns.map((col) => (
+                    <option key={col} value={col}>
+                      {col}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {chartColumn && (
+                <div className="chart-panel__chart">
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--grid-line)" />
+                      <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-30} textAnchor="end" height={50} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip />
+                      <Bar dataKey="value" fill="var(--accent)" radius={[2, 2, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  {columns.map((col) => (
+                  {visibleColumns.map((col) => (
                     <th key={col} onClick={() => toggleSort(col)}>
                       <span className="th__label">{col}</span>
                       <span className="th__type">{columnTypes[col]}</span>
@@ -282,7 +486,7 @@ export default function App() {
               <tbody>
                 {sortedRows.map((row, i) => (
                   <tr key={i}>
-                    {columns.map((col) => {
+                    {visibleColumns.map((col) => {
                       const val = row[col]
                       const isEmpty = val === '' || val == null
                       return (
