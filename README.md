@@ -2,7 +2,10 @@
 
 CSVファイルをドラッグ＆ドロップするだけで、その場でテーブル表示・ソート・検索・グラフ化ができるツールです。すべての処理はブラウザ内で完結し、ファイルはどこにも送信されません。
 
+- 公開URL: https://yukisatodev.github.io/csv-quick-viewer/（手元にCSVがなくても「サンプルデータを試す」で確認できます）
 - 設計判断の詳細: [csv-quick-viewer-DECISIONS.md](csv-quick-viewer-DECISIONS.md)
+
+![CSV Quick Viewer 画面（列の型自動判定・検索・統計・グラフ表示）](./docs/screenshot-main.png)
 
 ---
 
